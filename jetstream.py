@@ -19,6 +19,7 @@ from pydap import client
 import netCDF4
 import numpy as np
 import datetime
+import argparse
 import sys, os
 
 A = {'r': 52/255., 'g': 152/255., 'b': 219/255.}  # blue
@@ -72,63 +73,54 @@ class JetStreamMap():
 
 
 class JetStreamData():
-    """Abstract base class"""
+    """Abstract base class, in case other data sources turn up"""
 
     def __init__(self):
         self.load()
 
-    def create_map(self, level, timestr):
+    def create_map(self, level, timestr, west, east, south, north):
         if level == 250:
             title = "Jet Stream %s" % timestr
         else:
             title = "Winds %d mb %s" % (level, timestr)
 
-        mymap = JetStreamMap(lon1=-180, lon2=180, lat1=-70, lat2=+74)
-        # mymap = JetStreamMap(lon1=-134, lon2=-74, lat1=26, lat2=+52)
+        mymap = JetStreamMap(lon1=west, lon2=east, lat1=south, lat2=north)
         mymap.render(self, title=title)
         return mymap
 
 class ERAJetStreamData(JetStreamData):
 
-    def __init__(self, filename, level=250):
-        self.load(filename, level)
-
-    def load(self, filename, level):
+    def __init__(self, filename):
         self.data = netCDF4.Dataset(filename)
 
-        # Find the index for the 250 hPa level
-        # (though netCDF4 says data['level'] has units millibars
-        # rather than hPa)
-        for lev, millibars in enumerate(self.data['level']):
-            if millibars == level:
-                break
-        else:
-            print("No 250 hPa level")
-            raise ValueError("No %d hPa level" % level)
-        print("%d hPa level is at index %d" % (level, lev))
-        self.level = level
-        self.levindex = lev
+    def list_levels(self):
+        return self.data['level'][:]
 
-    def calc_windspeed(self, idx):
+    def calc_windspeed(self, idx, level, sensitivity=0):
         # times = netCDF4.num2date(data.variables['time'],
         # data.variables['time'].units)
         # print("times:", times)
+
+        # Find the index for the appropriate pressure level
+        for levindex, millibars in enumerate(self.data['level']):
+            if millibars == level:
+                break
+        else:
+            raise ValueError("No %d hPa level (maybe check with -L?)" % level)
 
         lon = self.data.variables['longitude'][:]
         lat = self.data.variables['latitude'][:]
 
         # Set a sensitivity factor
-        if self.level == 250:    # jetstream, big winds
-            sensitivity = 3.5
-        else:                    # anywhere else, the winds are smaller
-            sensitivity = 7.5
+        if not sensitivity:
+            if level == 250:    # jetstream, big winds
+                sensitivity = 3.5
+            else:                    # anywhere else, the winds are smaller
+                sensitivity = 7.5
 
         windspeed = (sensitivity *
-            np.sqrt(self.data.variables['u'][idx][self.levindex][:]**2
-                    + self.data.variables['v'][idx][self.levindex][:]**2))
-        print("Shapes: u", self.data.variables['u'].shape,
-              ", v", self.data.variables['u'].shape,
-              ", windspeed", windspeed.shape)
+            np.sqrt(self.data.variables['u'][idx][levindex][:]**2
+                    + self.data.variables['v'][idx][levindex][:]**2))
 
         # Only take the first element of the windspeed, the 250 hPa level
         # windspeed = windspeed[day]
@@ -137,31 +129,73 @@ class ERAJetStreamData(JetStreamData):
         windspeed, lon = basemap.shiftgrid(180, windspeed, lon, start=False)
 
         self.lon, self.lat, self.windspeed = lon, lat, windspeed
-        print("Now windspeed shape is", windspeed.shape)
+
+def parse_args():
+    """Parse commandline arguments."""
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('-', '--threshold', action='store',
+                        dest='threshold', type=float, default=0.0,
+                        help="Threshold. If 0, will use 3.6 for the jetstream"
+                             " and 7.5 for any other level.")
+    parser.add_argument('-a', '--area', action='store',
+                        dest='area', default='-180,180,-70,74',
+                        help="Area to plot: west,east,south,north"
+                             " (default: -180,180,-70,74). Doesn't work yet.")
+    parser.add_argument('-l', '--level', action='store', dest='level',
+                        type=int, default=250,
+                        help="Pressure level to plot, in millibars."
+                        " 1000 for sea level, 775 for around 7000 feet,"
+                        " 250 for the jetstream")
+    parser.add_argument('-o', '--outdir', action='store', dest='outdir',
+                        default='outdir',
+                        help="Output directory (will be created if needed)")
+    parser.add_argument('-d', '--dpi', action='store', dest='dpi',
+                        type=int, default=100,
+                        help="DPI to save images (default 100)")
+
+    parser.add_argument('-L', '--list-levels', action="store_true",
+                        default=False, dest='listlevels',
+                        help="List levels available in the data file")
+
+    parser.add_argument('datafile',
+                        help="The datafile, in netCDF4 format, file.nc")
+
+    return parser.parse_args(sys.argv[1:])
 
 if __name__ == '__main__':
-    level = 250     # 1000 for sea level, 775 for 7000'
-    outdir = "output"
+    args = parse_args()
 
-    if not os.path.exists(outdir):
-        os.mkdir(outdir)
-    elif not  os.path.isdir(outdir):
-        print("Can't create dir %s: there's a file by that name" % outdir)
+    west, east, south, north = ( float(l.strip())
+                                 for l in args.area.split(',') )
+    # for North America maybe try -134, -74, 26, 52 ?
+
+    JSdata = ERAJetStreamData(args.datafile)
+
+    if args.listlevels:
+        print("Levels available in dataset %s:" % args.datafile)
+        for level in JSdata.list_levels():
+            print("   ", level)
+        sys.exit(0)
+
+    if not os.path.exists(args.outdir):
+        os.mkdir(args.outdir)
+    elif not  os.path.isdir(args.outdir):
+        print("Can't create dir %s: there's a file by that name" % args.outdir)
         sys.exit(1)
-
-    JSdata = ERAJetStreamData('interim-world-2015-04-windspeed.nc', level)
 
     timeunits = JSdata.data['time'].units
     cal = JSdata.data['time'].calendar
     for i, t in enumerate(JSdata.data['time']):
         thedate = netCDF4.num2date(t, units=timeunits, calendar=cal)
-        print("thedate:", thedate, type(thedate))
         timestr = thedate.strftime("%Y-%m-%d")
 
-        JSdata.calc_windspeed(i)
+        JSdata.calc_windspeed(i, args.level)
 
-        mymap = JSdata.create_map(level, timestr)
+        mymap = JSdata.create_map(args.level, timestr, west, east, south, north)
 
-        mymap.fig.savefig('output/%s-%d.png' % (timestr, level), dpi=100)
+        figname = '%s/%s-%d.png' % (args.outdir, timestr, args.level)
+        mymap.fig.savefig(figname, dpi=args.dpi)
+        print(figname)
         plt.close()
 
