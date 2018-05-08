@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 """
 jetstream.py makes beautiful maps of the atmospheric jet stream.
 """
@@ -16,6 +18,8 @@ from mpl_toolkits import basemap
 from pydap import client
 import netCDF4
 import numpy as np
+import datetime
+import sys, os
 
 A = {'r': 52/255., 'g': 152/255., 'b': 219/255.}  # blue
 B = {'r': 231/255., 'g': 76/255., 'b': 60/255.}   # red
@@ -38,7 +42,6 @@ COLORMAP = colors.LinearSegmentedColormap('jetstream',
                                                      (0.15, 1.0, 1.0),
                                                      (1.0, 1.0, 1.0)]})
 
-
 class JetStreamMap():
 
     def __init__(self, lon1=-140, lon2=40, lat1=20, lat2=70):
@@ -46,19 +49,22 @@ class JetStreamMap():
         self.lat1, self.lat2 = lat1, lat2
 
     def render(self, data, vmin=80, vmax=220, title=None):
-        self.fig = plt.figure(figsize=(9, 9*(9/16.)))
+        # self.fig = plt.figure(figsize=(9, 9*(9/16.)))
+        self.fig = plt.figure(figsize=(10, 5))
         self.fig.subplots_adjust(0.05, 0.15, 0.95, 0.88,
                                  hspace=0.0, wspace=0.1)
         self.map = basemap.Basemap(projection='cyl',
                                    llcrnrlon=self.lon1, llcrnrlat=self.lat1,
                                    urcrnrlon=self.lon2, urcrnrlat=self.lat2,
                                    resolution="c", fix_aspect=False)
+
         self.map.pcolormesh(data.lon, data.lat, data.windspeed,
                             cmap=COLORMAP, vmin=vmin, vmax=vmax, alpha=None)
         self.colorbar = self.map.colorbar(location='bottom',
                                           pad=0.1, size=0.25,
                                           ticks=[100, 150, 200, 250])
-        self.colorbar.ax.set_xlabel('Average wind speed at 250 mb (km/h)', fontsize=16)
+        self.colorbar.ax.set_xlabel('Average wind speed at 250 mb (km/h)',
+                                    fontsize=16)
         self.map.drawcoastlines(color='#7f8c8d', linewidth=0.5)
         self.map.fillcontinents('#bdc3c7', zorder=0)
         self.fig.text(.05, .91, title, fontsize=24, ha='left')
@@ -71,79 +77,91 @@ class JetStreamData():
     def __init__(self):
         self.load()
 
-    def create_map(self, title=None):
+    def create_map(self, level, timestr):
+        if level == 250:
+            title = "Jet Stream %s" % timestr
+        else:
+            title = "Winds %d mb %s" % (level, timestr)
+
         mymap = JetStreamMap(lon1=-180, lon2=180, lat1=-70, lat2=+74)
+        # mymap = JetStreamMap(lon1=-134, lon2=-74, lat1=26, lat2=+52)
         mymap.render(self, title=title)
         return mymap
 
-
-class GFSJetStreamData(JetStreamData):
-    """
-    Parameters
-    ----------
-    url : str
-        e.g. http://nomads.ncep.noaa.gov:9090/dods/gfs/gfs20140210/gfs_00z_anl
-    """
-    def __init__(self, url):
-        self.url = url
-        self.load()
-
-    def load(self):
-        c = client.open_url(self.url)
-        lon = c.ugrdtrop.lon[:]
-        #lon[lon > 180] -= 360  # Basemap runs from -180 to +180
-        lat = c.ugrdtrop.lat[:]
-        u_component = c.ugrdtrop.ugrdtrop[0][0]  # units m/s
-        v_component = c.vgrdtrop.vgrdtrop[0][0]  # units m/s
-        windspeed = 3.6 * np.sqrt(u_component**2, v_component**2)  # units km/h
-        # Shift grid from 0 to 360 => -180 to 180
-        windspeed, lon = basemap.shiftgrid(180, windspeed, lon, start=False)
-        self.lon, self.lat, self.windspeed = lon, lat, windspeed
-
-
 class ERAJetStreamData(JetStreamData):
 
-    def __init__(self, year):
-        self.year = year
-        self.load()
+    def __init__(self, filename, level=250):
+        self.load(filename, level)
 
-    def load(self):
-        data = netCDF4.Dataset('era-december-averages.nc')
-        #times = netCDF4.num2date(data.variables['time'],
-        #data.variables['time'].units)
-        #print(times[self.year - 1979])
-        lon = data.variables['longitude'][:]
-        lat = data.variables['latitude'][:]
-        windspeed = 3.6 * np.sqrt(data.variables['u'][:]**2
-                                  + data.variables['v'][:]**2)
-        windspeed = windspeed[self.year - 1979]
+    def load(self, filename, level):
+        self.data = netCDF4.Dataset(filename)
+
+        # Find the index for the 250 hPa level
+        # (though netCDF4 says data['level'] has units millibars
+        # rather than hPa)
+        for lev, millibars in enumerate(self.data['level']):
+            if millibars == level:
+                break
+        else:
+            print("No 250 hPa level")
+            raise ValueError("No %d hPa level" % level)
+        print("%d hPa level is at index %d" % (level, lev))
+        self.level = level
+        self.levindex = lev
+
+    def calc_windspeed(self, idx):
+        # times = netCDF4.num2date(data.variables['time'],
+        # data.variables['time'].units)
+        # print("times:", times)
+
+        lon = self.data.variables['longitude'][:]
+        lat = self.data.variables['latitude'][:]
+
+        # Set a sensitivity factor
+        if self.level == 250:    # jetstream, big winds
+            sensitivity = 3.5
+        else:                    # anywhere else, the winds are smaller
+            sensitivity = 7.5
+
+        windspeed = (sensitivity *
+            np.sqrt(self.data.variables['u'][idx][self.levindex][:]**2
+                    + self.data.variables['v'][idx][self.levindex][:]**2))
+        print("Shapes: u", self.data.variables['u'].shape,
+              ", v", self.data.variables['u'].shape,
+              ", windspeed", windspeed.shape)
+
+        # Only take the first element of the windspeed, the 250 hPa level
+        # windspeed = windspeed[day]
+
         # Shift grid from 0 to 360 => -180 to 180
         windspeed, lon = basemap.shiftgrid(180, windspeed, lon, start=False)
+
         self.lon, self.lat, self.windspeed = lon, lat, windspeed
-
-
-def plot_gfs_average():
-    days = range(1, 17)
-    streamdata = []
-    for day in days:
-        print(day)
-        streamdata.append(GFSJetStreamData("http://nomads.ncep.noaa.gov:9090"
-                        "/dods/gfs/gfs201402{0:02d}/gfs_00z_anl".format(day)))
-    for data in streamdata[1:]:
-        streamdata[0].windspeed += data.windspeed
-    streamdata[0].windspeed = streamdata[0].windspeed / float(len(days))
-    mymap = streamdata[0].create_map("Jet stream in February 2014"
-                                     "(GFS averaged)")
-    mymap.fig.savefig('output/gfs.png')
-
-
-def plot_era_average():
-    for year in range(1979, 2014):
-        data = ERAJetStreamData(year)
-        mymap = data.create_map("December {0}".format(year))
-        mymap.fig.savefig('output/{}.png'.format(year), dpi=220)
-        plt.close()
-
+        print("Now windspeed shape is", windspeed.shape)
 
 if __name__ == '__main__':
-    plot_era_average()
+    level = 250     # 1000 for sea level, 775 for 7000'
+    outdir = "output"
+
+    if not os.path.exists(outdir):
+        os.mkdir(outdir)
+    elif not  os.path.isdir(outdir):
+        print("Can't create dir %s: there's a file by that name" % outdir)
+        sys.exit(1)
+
+    JSdata = ERAJetStreamData('interim-world-2015-04-windspeed.nc', level)
+
+    timeunits = JSdata.data['time'].units
+    cal = JSdata.data['time'].calendar
+    for i, t in enumerate(JSdata.data['time']):
+        thedate = netCDF4.num2date(t, units=timeunits, calendar=cal)
+        print("thedate:", thedate, type(thedate))
+        timestr = thedate.strftime("%Y-%m-%d")
+
+        JSdata.calc_windspeed(i)
+
+        mymap = JSdata.create_map(level, timestr)
+
+        mymap.fig.savefig('output/%s-%d.png' % (timestr, level), dpi=100)
+        plt.close()
+
