@@ -3,8 +3,9 @@
 '''Fetch jetstream (and other wind) data from ECMWFDataServer.
    Uses the ECMWF Web API:
    https://software.ecmwf.int/wiki/display/WEBAPI/ECMWF+Web+API+Home
-   installable through pip:
-   pip3 install https://software.ecmwf.int/wiki/download/attachments/56664858/ecmwf-api-client-python.tgz
+   installable through pip: go to
+   https://software.ecmwf.int/wiki/display/WEBAPI/Web-API+Downloads
+   and click on "Click here to see the installation/update instructions..."
 
    You will need to register for an API key and put it in your ~/.ecmwfapirc
    then go to

@@ -6,9 +6,9 @@ jetstream.py makes beautiful maps of the atmospheric jet stream.
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
-__version__ = "0.1"
-__author__ = "Geert Barentsen (geert@barentsen.be)"
-__copyright__ = "Copyright 2014 Geert Barentsen"
+__version__ = "0.2"
+__author__ = "Akkana Peck (akkana@shallowsky.com), Geert Barentsen (geert@barentsen.be)"
+__copyright__ = "Copyright 2018 Akkana Peck, 2014 Geert Barentsen"
 
 import matplotlib as mpl
 mpl.use('TkAgg')
@@ -19,6 +19,7 @@ from pydap import client
 import netCDF4
 import numpy as np
 import datetime
+import math
 import argparse
 import sys, os
 
@@ -50,8 +51,15 @@ class JetStreamMap():
         self.lat1, self.lat2 = lat1, lat2
 
     def render(self, data, vmin=80, vmax=220, title=None):
-        # self.fig = plt.figure(figsize=(9, 9*(9/16.)))
-        self.fig = plt.figure(figsize=(10, 5))
+        # Calculate width and height in an appropriate aspect ratio:
+        width = 9
+        xdist = JetStreamMap.haversine_distance(self.lat1, self.lon1,
+                                                self.lat1, self.lon2)
+        ydist = JetStreamMap.haversine_distance(self.lat1, self.lon1,
+                                                self.lat2, self.lon1)
+        height = width * ydist/xdist
+        self.fig = plt.figure(figsize=(width, height))
+
         self.fig.subplots_adjust(0.05, 0.15, 0.95, 0.88,
                                  hspace=0.0, wspace=0.1)
         self.map = basemap.Basemap(projection='cyl',
@@ -70,6 +78,29 @@ class JetStreamMap():
         self.map.fillcontinents('#bdc3c7', zorder=0)
         self.fig.text(.05, .91, title, fontsize=24, ha='left')
         return self.fig
+
+    EARTH_RADIUS_KM = 6371.
+
+    @classmethod
+    def haversine_distance(cls, latitude_1, longitude_1,
+                           latitude_2, longitude_2):
+        """
+        Haversine distance between two points, expressed in meters.
+        From https://github.com/tkrajina/gpxpy/blob/master/gpxpy/geo.py
+        Implemented from http://www.movable-type.co.uk/scripts/latlong.html
+        Returns distance in miles.
+        """
+        d_lat = math.radians(latitude_1 - latitude_2)
+        d_lon = math.radians(longitude_1 - longitude_2)
+        lat1 = math.radians(latitude_1)
+        lat2 = math.radians(latitude_2)
+
+        a = math.sin(d_lat / 2) * math.sin(d_lat / 2) + \
+            math.sin(d_lon / 2) * math.sin(d_lon / 2) * \
+            math.cos(lat1) * math.cos(lat2)
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+        return JetStreamMap.EARTH_RADIUS_KM * c
 
 
 class JetStreamData():
@@ -130,45 +161,47 @@ class ERAJetStreamData(JetStreamData):
 
         self.lon, self.lat, self.windspeed = lon, lat, windspeed
 
-def parse_args():
-    """Parse commandline arguments."""
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument('-', '--threshold', action='store',
-                        dest='threshold', type=float, default=0.0,
-                        help="Threshold. If 0, will use 3.6 for the jetstream"
-                             " and 7.5 for any other level.")
-    parser.add_argument('-a', '--area', action='store',
-                        dest='area', default='-180,180,-70,74',
-                        help="Area to plot: west,east,south,north"
-                             " (default: -180,180,-70,74). Doesn't work yet.")
-    parser.add_argument('-l', '--level', action='store', dest='level',
-                        type=int, default=250,
-                        help="Pressure level to plot, in millibars."
-                        " 1000 for sea level, 775 for around 7000 feet,"
-                        " 250 for the jetstream")
-    parser.add_argument('-o', '--outdir', action='store', dest='outdir',
-                        default='outdir',
-                        help="Output directory (will be created if needed)")
-    parser.add_argument('-d', '--dpi', action='store', dest='dpi',
-                        type=int, default=100,
-                        help="DPI to save images (default 100)")
-
-    parser.add_argument('-L', '--list-levels', action="store_true",
-                        default=False, dest='listlevels',
-                        help="List levels available in the data file")
-
-    parser.add_argument('datafile',
-                        help="The datafile, in netCDF4 format, file.nc")
-
-    return parser.parse_args(sys.argv[1:])
-
 if __name__ == '__main__':
+
+    def parse_args():
+        """Parse commandline arguments."""
+        parser = argparse.ArgumentParser()
+
+        parser.add_argument('-', '--threshold', action='store',
+                            dest='threshold', type=float, default=0.0,
+                            help="Threshold. Defaults to 3.6 for the jetstream"
+                                 " and 7.5 for any other level.")
+        parser.add_argument('-a', '--area', action='store',
+                            dest='area', default='-180,180,-70,74',
+                            help="Area to plot: west,east,south,north"
+                                 " (default: -180,180,-70,74).")
+        parser.add_argument('-l', '--level', action='store', dest='level',
+                            type=int, default=250,
+                            help="Pressure level to plot, in millibars."
+                            " 1000 for sea level, 775 for around 7000 feet,"
+                            " 250 for the jetstream")
+        parser.add_argument('-o', '--outdir', action='store', dest='outdir',
+                            default='outdir',
+                            help="Output directory (will be created if needed)")
+        parser.add_argument('-d', '--dpi', action='store', dest='dpi',
+                            type=int, default=100,
+                            help="DPI to save images (default 100)")
+
+        parser.add_argument('-L', '--list-levels', action="store_true",
+                            default=False, dest='listlevels',
+                            help="List levels available in the data file")
+
+        parser.add_argument('datafile',
+                            help="The datafile, in netCDF4 format, file.nc")
+
+        return parser.parse_args(sys.argv[1:])
+
     args = parse_args()
+    print(args)
 
     west, east, south, north = ( float(l.strip())
                                  for l in args.area.split(',') )
-    # for North America maybe try -134, -74, 26, 52 ?
+    # for North America try -a"
 
     JSdata = ERAJetStreamData(args.datafile)
 
