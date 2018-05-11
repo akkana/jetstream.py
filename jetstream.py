@@ -15,12 +15,15 @@ mpl.use('TkAgg')
 import matplotlib.pyplot as plt
 from matplotlib import colors
 from mpl_toolkits import basemap
-from pydap import client
-import netCDF4
 import numpy as np
+
+# from pydap import client
+
+import netCDF4
+
 import datetime
-import math
 import argparse
+import math
 import sys, os
 
 A = {'r': 52/255., 'g': 152/255., 'b': 219/255.}  # blue
@@ -51,21 +54,21 @@ class JetStreamMap():
         self.lat1, self.lat2 = lat1, lat2
 
     def render(self, data, vmin=80, vmax=220, title=None):
-        # Calculate width and height in an appropriate aspect ratio:
-        width = 9
-        xdist = JetStreamMap.haversine_distance(self.lat1, self.lon1,
-                                                self.lat1, self.lon2)
-        ydist = JetStreamMap.haversine_distance(self.lat1, self.lon1,
-                                                self.lat2, self.lon1)
-        height = width * ydist/xdist
-        self.fig = plt.figure(figsize=(width, height))
+
+        # I haven't found any way to get basemap to tell us the aspect ratio,
+        # or to specify only one and let basemap calculate the other:
+        # self.fig = plt.figure(figsize=(9, 6))
+        # So just don't specify; basemap will give us something
+        # that comes out 640px at 100dpi.
+        self.fig = plt.figure()
 
         self.fig.subplots_adjust(0.05, 0.15, 0.95, 0.88,
                                  hspace=0.0, wspace=0.1)
+
         self.map = basemap.Basemap(projection='cyl',
                                    llcrnrlon=self.lon1, llcrnrlat=self.lat1,
                                    urcrnrlon=self.lon2, urcrnrlat=self.lat2,
-                                   resolution="c", fix_aspect=False)
+                                   resolution="c", fix_aspect=True)
 
         self.map.pcolormesh(data.lon, data.lat, data.windspeed,
                             cmap=COLORMAP, vmin=vmin, vmax=vmax, alpha=None)
@@ -78,29 +81,6 @@ class JetStreamMap():
         self.map.fillcontinents('#bdc3c7', zorder=0)
         self.fig.text(.05, .91, title, fontsize=24, ha='left')
         return self.fig
-
-    EARTH_RADIUS_KM = 6371.
-
-    @classmethod
-    def haversine_distance(cls, latitude_1, longitude_1,
-                           latitude_2, longitude_2):
-        """
-        Haversine distance between two points, expressed in meters.
-        From https://github.com/tkrajina/gpxpy/blob/master/gpxpy/geo.py
-        Implemented from http://www.movable-type.co.uk/scripts/latlong.html
-        Returns distance in miles.
-        """
-        d_lat = math.radians(latitude_1 - latitude_2)
-        d_lon = math.radians(longitude_1 - longitude_2)
-        lat1 = math.radians(latitude_1)
-        lat2 = math.radians(latitude_2)
-
-        a = math.sin(d_lat / 2) * math.sin(d_lat / 2) + \
-            math.sin(d_lon / 2) * math.sin(d_lon / 2) * \
-            math.cos(lat1) * math.cos(lat2)
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-        return JetStreamMap.EARTH_RADIUS_KM * c
 
 
 class JetStreamData():
@@ -116,6 +96,7 @@ class JetStreamData():
             title = "Winds %d mb %s" % (level, timestr)
 
         mymap = JetStreamMap(lon1=west, lon2=east, lat1=south, lat2=north)
+
         mymap.render(self, title=title)
         return mymap
 
@@ -124,10 +105,19 @@ class ERAJetStreamData(JetStreamData):
     def __init__(self, filename):
         self.data = netCDF4.Dataset(filename)
 
-    def list_levels(self):
-        return self.data['level'][:]
+    def list_data(self):
+        dic = {}
+        for key in self.data.variables:
+            vals = self.data[key][:]
+            if len(vals) > 10:
+                dic[key] = len(vals)
+            else:
+                dic[key] = vals
 
-    def calc_windspeed(self, idx, level, sensitivity=0):
+        return dic
+        # return self.data['level'][:]
+
+    def calc_windspeed(self, idx, level, threshold=0):
         # times = netCDF4.num2date(data.variables['time'],
         # data.variables['time'].units)
         # print("times:", times)
@@ -142,19 +132,16 @@ class ERAJetStreamData(JetStreamData):
         lon = self.data.variables['longitude'][:]
         lat = self.data.variables['latitude'][:]
 
-        # Set a sensitivity factor
-        if not sensitivity:
-            if level == 250:    # jetstream, big winds
-                sensitivity = 3.5
+        # Set a threshold or sensitivity factor
+        if not threshold:
+            if level == 250:         # jetstream, big winds
+                threshold = 3.0
             else:                    # anywhere else, the winds are smaller
-                sensitivity = 7.5
+                threshold = 7.5
 
-        windspeed = (sensitivity *
+        windspeed = (threshold *
             np.sqrt(self.data.variables['u'][idx][levindex][:]**2
                     + self.data.variables['v'][idx][levindex][:]**2))
-
-        # Only take the first element of the windspeed, the 250 hPa level
-        # windspeed = windspeed[day]
 
         # Shift grid from 0 to 360 => -180 to 180
         windspeed, lon = basemap.shiftgrid(180, windspeed, lon, start=False)
@@ -167,29 +154,32 @@ if __name__ == '__main__':
         """Parse commandline arguments."""
         parser = argparse.ArgumentParser()
 
-        parser.add_argument('-', '--threshold', action='store',
+        parser.add_argument('-t', '--threshold', action='store',
                             dest='threshold', type=float, default=0.0,
-                            help="Threshold. Defaults to 3.6 for the jetstream"
+                            help="Threshold. Defaults to 3.0 for the jetstream"
                                  " and 7.5 for any other level.")
         parser.add_argument('-a', '--area', action='store',
-                            dest='area', default='-180,180,-70,74',
-                            help="Area to plot: west,east,south,north"
-                                 " (default: -180,180,-70,74).")
+                            type=int, nargs=4,
+                            dest='area', default=[-180, 180, -70, 74],
+                            metavar=("west", "east", "south", "north"),
+                            help="Area to plot"
+                                 " (default: world, -180,180,-70,74; "
+                                 "for North America try -a -138 -55 15 62).")
         parser.add_argument('-l', '--level', action='store', dest='level',
                             type=int, default=250,
                             help="Pressure level to plot, in millibars."
-                            " 1000 for sea level, 775 for around 7000 feet,"
-                            " 250 for the jetstream")
+                                 " 1000 for sea level, 775 for 7000 feet,"
+                                 " 250 for the jetstream")
         parser.add_argument('-o', '--outdir', action='store', dest='outdir',
-                            default='outdir',
+                            default=None,
                             help="Output directory (will be created if needed)")
         parser.add_argument('-d', '--dpi', action='store', dest='dpi',
-                            type=int, default=100,
-                            help="DPI to save images (default 100)")
+                            type=int, default=150,
+                            help="DPI to save images (default 150)")
 
-        parser.add_argument('-L', '--list-levels', action="store_true",
-                            default=False, dest='listlevels',
-                            help="List levels available in the data file")
+        parser.add_argument('-L', '--list-data', action="store_true",
+                            default=False, dest='listdata',
+                            help="List values available in the data file")
 
         parser.add_argument('datafile',
                             help="The datafile, in netCDF4 format, file.nc")
@@ -197,20 +187,27 @@ if __name__ == '__main__':
         return parser.parse_args(sys.argv[1:])
 
     args = parse_args()
-    print(args)
+    # print(args)
 
-    west, east, south, north = ( float(l.strip())
-                                 for l in args.area.split(',') )
-    # for North America try -a"
+    west, east, south, north = args.area
+    # for North America try -a"-138,-70,15,62"
 
     JSdata = ERAJetStreamData(args.datafile)
 
-    if args.listlevels:
-        print("Levels available in dataset %s:" % args.datafile)
-        for level in JSdata.list_levels():
-            print("   ", level)
+    if args.listdata:
+        print("In dataset %s:\n" % args.datafile)
+        datadic = JSdata.list_data()
+        for key in datadic:
+            if type(datadic[key]) is int:
+                print("%-8s: %d values" % (key, datadic[key]))
+            else:
+                print("%s:" % key)
+                for val in datadic[key]:
+                    print("   ", val)
         sys.exit(0)
 
+    if not args.outdir:
+        args.outdir = 'outdir-%d-%s' % (args.level, args.threshold)
     if not os.path.exists(args.outdir):
         os.mkdir(args.outdir)
     elif not  os.path.isdir(args.outdir):
@@ -223,9 +220,10 @@ if __name__ == '__main__':
         thedate = netCDF4.num2date(t, units=timeunits, calendar=cal)
         timestr = thedate.strftime("%Y-%m-%d")
 
-        JSdata.calc_windspeed(i, args.level)
+        JSdata.calc_windspeed(i, args.level, args.threshold)
 
-        mymap = JSdata.create_map(args.level, timestr, west, east, south, north)
+        mymap = JSdata.create_map(args.level, timestr,
+                                  west, east, south, north)
 
         figname = '%s/%s-%d.png' % (args.outdir, timestr, args.level)
         mymap.fig.savefig(figname, dpi=args.dpi)
