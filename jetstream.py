@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
 """
-jetstream.py makes beautiful maps of the atmospheric jet stream.
+jetstream.py makes beautiful maps of the atmospheric jet stream
+using wind data from ECMWF.int.
 """
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
@@ -9,6 +10,7 @@ from __future__ import (absolute_import, division, print_function,
 __version__ = "0.2"
 __author__ = "Akkana Peck (akkana@shallowsky.com), Geert Barentsen (geert@barentsen.be)"
 __copyright__ = "Copyright 2018 Akkana Peck, 2014 Geert Barentsen"
+__license__ = "MIT"
 
 import matplotlib as mpl
 mpl.use('TkAgg')
@@ -17,14 +19,20 @@ from matplotlib import colors
 from mpl_toolkits import basemap
 import numpy as np
 
-# from pydap import client
-
 import netCDF4
 
 import datetime
 import argparse
 import math
 import sys, os
+
+# Decide on a cache directory
+try:
+    import xdg.BaseDirectory
+    CACHEDIR = os.path.join(xdg.BaseDirectory.xdg_cache_home, "ECMWF")
+except:
+    print("Can't import xdg, will look for data in current directory")
+    CACHEDIR = '.'
 
 A = {'r': 52/255., 'g': 152/255., 'b': 219/255.}  # blue
 B = {'r': 231/255., 'g': 76/255., 'b': 60/255.}   # red
@@ -79,6 +87,8 @@ class JetStreamMap():
                                     fontsize=16)
         self.map.drawcoastlines(color='#7f8c8d', linewidth=0.5)
         self.map.fillcontinents('#bdc3c7', zorder=0)
+        self.map.drawcountries(color='#7f8c8d', linewidth=0.5)
+        self.map.drawstates(color='#7f8c8d', linewidth=0.5)
         self.fig.text(.05, .91, title, fontsize=24, ha='left')
         return self.fig
 
@@ -103,16 +113,54 @@ class JetStreamData():
 class ERAJetStreamData(JetStreamData):
 
     def __init__(self, filename):
-        self.data = netCDF4.Dataset(filename)
+        if os.path.exists(filename):
+            self.datafile = filename
+        else:
+            self.datafile = os.path.join(CACHEDIR, filename)
+            if not os.path.exists(self.datafile):
+                raise IOError(2, "Data file doesn't exist", filename)
+
+        self.data = netCDF4.Dataset(self.datafile)
 
     def list_data(self):
         dic = {}
         for key in self.data.variables:
             vals = self.data[key][:]
-            if len(vals) > 10:
-                dic[key] = len(vals)
-            else:
+
+            if key == 'time':
+                timeunits = JSdata.data['time'].units
+                cal = JSdata.data['time'].calendar
+                starttime = netCDF4.num2date(vals[0], units=timeunits,
+                                             calendar=cal)
+                endtime = netCDF4.num2date(vals[-1], units=timeunits,
+                                           calendar=cal)
+                dic[key] = "%d values, ranging from %s to %s" % \
+                            (len(vals),
+                             starttime.strftime("%Y-%m-%d"),
+                             endtime.strftime("%Y-%m-%d"))
+
+            elif isinstance(vals, np.ndarray):
+                if len(vals.shape) == 1:
+                    if vals.shape[0] < 10:
+                        dic[key] = vals
+                    else:
+                        dic[key] = '%d values ranging from %s to %s' %\
+                                   (vals.shape[0],
+                                    str(min(vals)), str(max(vals)))
+                else:
+                    dic[key] = "ndarray of shape %s" % str(vals.shape)
+
+            elif len(vals) < 10:
                 dic[key] = vals
+
+            elif type(vals[0]) is int or type(vals[0]) is np.int32:
+                dic[key] = "%s: ranging from %d to %d" % (key, min(vals),
+                                                          max(vals))
+            elif type(vals[0]) is float or type(vals[0]) is np.float32:
+                dic[key] = "%s: ranging from %f to %f" % (key, min(vals),
+                                                          max(vals))
+            else:
+                dic[key] = '%s: type %s' % (key, str(type(vals[0])))
 
         return dic
         # return self.data['level'][:]
@@ -144,7 +192,7 @@ class ERAJetStreamData(JetStreamData):
                     + self.data.variables['v'][idx][levindex][:]**2))
 
         # Shift grid from 0 to 360 => -180 to 180
-        windspeed, lon = basemap.shiftgrid(180, windspeed, lon, start=False)
+        # windspeed, lon = basemap.shiftgrid(180, windspeed, lon, start=False)
 
         self.lon, self.lat, self.windspeed = lon, lat, windspeed
 
@@ -160,10 +208,11 @@ if __name__ == '__main__':
                                  " and 7.5 for any other level.")
         parser.add_argument('-a', '--area', action='store',
                             type=int, nargs=4,
-                            dest='area', default=[-180, 180, -70, 74],
+                            dest='area', default=[0, 0, 0, 0],
                             metavar=("west", "east", "south", "north"),
                             help="Area to plot"
-                                 " (default: world, -180,180,-70,74; "
+                                 " (default: everything in the dataset."
+                                 "For world, -180 180 -70 74; "
                                  "for North America try -a -138 -55 15 62).")
         parser.add_argument('-l', '--level', action='store', dest='level',
                             type=int, default=250,
@@ -189,17 +238,23 @@ if __name__ == '__main__':
     args = parse_args()
     # print(args)
 
-    west, east, south, north = args.area
-    # for North America try -a"-138,-70,15,62"
-
     JSdata = ERAJetStreamData(args.datafile)
+
+    west, east, south, north = args.area
+    if west == 0 and east == 0:
+        west = min(JSdata.data['longitude'])
+        east = max(JSdata.data['longitude'])
+    if north == 0 and south == 0:
+        south = min(JSdata.data['latitude'])
+        north = max(JSdata.data['latitude'])
+    print("WENS:", west, east, north, south)
 
     if args.listdata:
         print("In dataset %s:\n" % args.datafile)
         datadic = JSdata.list_data()
         for key in datadic:
-            if type(datadic[key]) is int:
-                print("%-8s: %d values" % (key, datadic[key]))
+            if type(datadic[key]) is str:
+                print("%-10s: %s" % (key, datadic[key]))
             else:
                 print("%s:" % key)
                 for val in datadic[key]:
