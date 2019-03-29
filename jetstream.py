@@ -51,17 +51,19 @@ COLORMAP = colors.LinearSegmentedColormap('jetstream',
                                                      (0.25, A['b'], A['b']),
                                                      (0.75, B['b'], B['b']),
                                                      (1.0, C['b'], C['b'])],
+                                           # Alpha that sets land to grey,
+                                           # water to white:
                                            'alpha': [(0.0, 0.0, 0.0),
                                                      (0.15, 1.0, 1.0),
                                                      (1.0, 1.0, 1.0)]})
 
 class JetStreamMap():
 
-    def __init__(self, lon1=-140, lon2=40, lat1=20, lat2=70):
+    def __init__(self, lon1=-140, lon2=-40, lat1=20, lat2=70):
         self.lon1, self.lon2 = lon1, lon2
         self.lat1, self.lat2 = lat1, lat2
 
-    def render(self, data, vmin=80, vmax=220, title=None):
+    def render(self, data, vmin=30, vmax=220, title=None):
 
         # I haven't found any way to get basemap to tell us the aspect ratio,
         # or to specify only one and let basemap calculate the other:
@@ -85,6 +87,7 @@ class JetStreamMap():
                                           ticks=[100, 150, 200, 250])
         self.colorbar.ax.set_xlabel('Average wind speed at 250 mb (km/h)',
                                     fontsize=16)
+
         self.map.drawcoastlines(color='#7f8c8d', linewidth=0.5)
         self.map.fillcontinents('#bdc3c7', zorder=0)
         self.map.drawcountries(color='#7f8c8d', linewidth=0.5)
@@ -211,7 +214,7 @@ if __name__ == '__main__':
                             dest='area', default=[0, 0, 0, 0],
                             metavar=("west", "east", "south", "north"),
                             help="Area to plot"
-                                 " (default: everything in the dataset."
+                                 " (default: everything in the dataset.) "
                                  "For world, -180 180 -70 74; "
                                  "for North America try -a -138 -55 15 62).")
         parser.add_argument('-l', '--level', action='store', dest='level',
